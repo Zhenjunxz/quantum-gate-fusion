@@ -85,6 +85,11 @@ python benchmark.py --ns 12 14 16 18 20 22 --repeats 7
 - 复制数组虽然在计时区间外，但可能改变 CPU Cache 的热状态；当前数据并不单独证明 DRAM 流量变化。若要区分 Cache 和主存，需要补充合适的硬件计数器或专门设计的控制实验。
 - 默认忽略 `results/`，避免把个人设备上未经核对的实验结果误认为全组已经共同验证的结论。
 
+## 目前已归档的实验
+
+- **[Mac 首次性能试跑（2026-11-12）](experiments/mac_run_01/README.md)**：保存 6 个规模、每种方法 15 次的原始计时与中位数汇总、运行环境及可预览折线图。该记录属于初步探索，不代表最终性能结论。
+- 小组成员独立复现与讨论：[GitHub Issue #1](https://github.com/Zhenjunxz/quantum-gate-fusion/issues/1)。
+
 ## 4. 文件结构
 
 ```text
