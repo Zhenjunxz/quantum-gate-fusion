@@ -32,6 +32,10 @@ d' = (a-b-c+d)/2
 
 此处逻辑数组访问量不等于 Cache Miss、DRAM 实际传输或 CPU 指令数。两种实现的算术执行路径可能也不完全相同，不能把所有时间差都归因于主存。
 
+## 学习资料
+
+- **[PQsim 源码入门学习指南](docs/PQSIM_STUDY_GUIDE.md)**：阅读顺序、关键源码解释、H Gate 振幅索引、Baseline/Fusion 的对应关系和小组检查题。
+
 ## 2. 安装与验证
 
 推荐 Python 3.11，macOS / Linux / Windows 均可执行（需有可用的 Numba 平台支持）。
