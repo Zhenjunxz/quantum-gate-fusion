@@ -215,3 +215,24 @@ print(full["totals"], direct["totals"])
 **准确性保障：** 新增 \`test_baseline_associativity.py\`，用与 Baseline 双层循环不同的“逐个下标位测试”法列举成对振幅，并使用普通 Python 列表独立模拟每个 Set 的 LRU。测试覆盖多种 n、目标位、缓存行大小、容量、对齐、路数、跨门访问及非法配置。其作用是验证**模型计算与设定的语义一致**，不是验证模型预测真实硬件。
 
 此功能只增加 A 模块分析能力，不修改 Baseline 数值内核或其他人负责的 Fusion/Benchmark。
+
+## 11. A 模块交付验收：独立 NumPy 参照 + 一键检查
+
+仅增加 A 的**数值可靠性验收**，不再扩展 Cache 模型。除了原有 pytest 外，可以直接运行：
+
+```bash
+python -m pytest -q
+python verify_baseline_a.py
+```
+
+新增两个 A 工具：
+
+- `baseline_reference.py::h_sequence_numpy_reference(state,targets)`：使用 **NumPy reshape + moveaxis** 按张量轴实现 H 门，而不是复用 Baseline 的 bit-stride / base-offset 双层循环。函数返回新数组，原始 state 不变，适合交叉验算；**不作为性能对照的 Baseline**。
+- `verify_baseline_a.py`：默认对 `n=2,6,8,12,16` 以及重复门、空序列进行数学参照检查；同时核对双门兼容接口、受限 H-only 序列接口、prepared plan 与逻辑读写公式的一致性。只输出误差、逻辑字节数，不计时。
+
+它可以成为 C/D 组员集成前的最小验收手段，但**C 是否采用哪些接口，仍由组内共同决定**。原 README/main 及 B/C/D/E 文件未修改。
+
+特别注意：
+1. oracle 与 Baseline 使用相同的数据类型和 Hadamard 数学公式，但不同的**数组索引实现**，因此能发现常见的 endianness、stride、循环边界错误；不代表覆盖所有潜在软件错误。
+2. `np.testing.assert_allclose(..., atol=1e-12, rtol=1e-12)` 是当前项目的数值容差，不表示两种浮点计算的结果逐位相同。
+3. `verify_baseline_a.py` 和 NumPy oracle 不属于 E 的正式计时方案；其运行时间和内存开销**不应计入 Baseline/Fusion 加速比**。
