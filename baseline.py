@@ -211,3 +211,122 @@ def baseline_access_profile(
         "per_gate": per_gate,
         "totals": baseline_logical_memory_accesses(n_qubits, len(plan.targets)),
     }
+
+
+def baseline_logical_access_trace(
+    n_qubits: int,
+    targets: tuple[int, ...] | list[int],
+    max_pairs: int = 16,
+) -> dict:
+    """Bounded prefix of the *algorithmic* read/write order, not a CPU trace.
+
+    Each pair describes two amplitude loads followed by two amplitude stores
+    in the nested-loop order of _apply_h_inplace. Actual compiler, cache,
+    prefetcher, and DRAM behavior are intentionally not modeled here.
+
+    Unlike a full trace, memory use is O(max_pairs); safe for large n.
+    """
+    plan = prepare_baseline_sequence(n_qubits, targets)
+    if type(max_pairs) is not int:
+        raise TypeError("max_pairs must be a Python int (not bool)")
+    if not 0 <= max_pairs <= 4096:
+        raise ValueError("max_pairs must be between 0 and 4096")
+    amplitude_pairs_per_gate = (1 << n_qubits) // 2
+    total_pairs = amplitude_pairs_per_gate * len(plan.targets)
+    count = min(max_pairs, total_pairs)
+    trace = []
+    for sequence_pair in range(count):
+        gate_index, local_pair = divmod(sequence_pair, amplitude_pairs_per_gate)
+        target = plan.targets[gate_index]
+        stride = 1 << target
+        block, offset = divmod(local_pair, stride)
+        i = block * (2 * stride) + offset
+        j = i + stride
+        trace.append({
+            "gate_index": gate_index,
+            "target": target,
+            "pair_index_in_gate": local_pair,
+            "read_indices": (i, j),
+            "write_indices": (i, j),
+            "read_byte_offsets": (16 * i, 16 * j),
+            "write_byte_offsets": (16 * i, 16 * j),
+        })
+    return {
+        "n_qubits": n_qubits,
+        "targets": plan.targets,
+        "total_pairs": total_pairs,
+        "sampled_pairs": count,
+        "truncated": count < total_pairs,
+        "trace": trace,
+    }
+
+
+def baseline_cache_line_pair_profile(
+    n_qubits: int,
+    targets: tuple[int, ...] | list[int],
+    line_bytes: int = 64,
+    base_offset_bytes: int = 0,
+) -> dict:
+    """Exact *address geometry* of H-gate amplitude pairs under a line model.
+
+    Only answers whether the two amplitudes in a pair lie in the same
+    hypothetical cache line, given configurable line size and array alignment.
+    Does NOT estimate cache misses, DRAM transactions, or execution time.
+
+    Uses periodic counting rather than materializing 2**n amplitudes.
+    Assumes 16-byte complex128 amplitudes and power-of-two line sizes.
+    """
+    plan = prepare_baseline_sequence(n_qubits, targets)
+    if type(line_bytes) is not int or line_bytes < 32 or line_bytes & (line_bytes - 1):
+        raise ValueError("line_bytes must be a power-of-two Python int >= 32")
+    if type(base_offset_bytes) is not int:
+        raise TypeError("base_offset_bytes must be a Python int (not bool)")
+    if not (0 <= base_offset_bytes < line_bytes and base_offset_bytes % 16 == 0):
+        raise ValueError("base_offset_bytes must be aligned to 16 bytes and < line_bytes")
+
+    n_amplitudes = 1 << n_qubits
+    n_pairs = n_amplitudes // 2
+    state_bytes = n_amplitudes * 16
+    distinct_lines = (base_offset_bytes + state_bytes - 1) // line_bytes + 1
+    per_gate = []
+
+    for gate_index, target in enumerate(plan.targets):
+        stride = 1 << target
+        stride_bytes = 16 * stride
+        if stride_bytes >= line_bytes:
+            same = 0
+        else:
+            # For power-of-two stride and line size, pair-line membership
+            # repeats every line_bytes // 32 consecutive pair iterations.
+            period_pairs = line_bytes // 32
+            def same_line(pair_number: int) -> bool:
+                block, offset = divmod(pair_number, stride)
+                left_index = block * 2 * stride + offset
+                left_byte = base_offset_bytes + 16 * left_index
+                right_byte = left_byte + stride_bytes
+                return left_byte // line_bytes == right_byte // line_bytes
+
+            full_period_same = sum(same_line(p) for p in range(period_pairs))
+            cycles, remainder = divmod(n_pairs, period_pairs)
+            same = cycles * full_period_same
+            same += sum(same_line(p) for p in range(remainder))
+
+        per_gate.append({
+            "gate_index": gate_index,
+            "target": target,
+            "pair_stride_bytes": stride_bytes,
+            "pair_count": n_pairs,
+            "same_line_pairs": same,
+            "different_line_pairs": n_pairs - same,
+            "different_line_fraction": (n_pairs - same) / n_pairs,
+            "distinct_state_lines_touched": distinct_lines,
+        })
+
+    return {
+        "n_qubits": n_qubits,
+        "targets": plan.targets,
+        "cache_line_bytes_assumed": line_bytes,
+        "array_base_offset_bytes_assumed": base_offset_bytes,
+        "per_gate": per_gate,
+        "note": "Analytical cache-line address geometry; NOT hardware cache misses.",
+    }

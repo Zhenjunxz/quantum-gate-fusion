@@ -95,3 +95,52 @@ for gate in profile["per_gate"]:
 这里的字节偏移是两个配对振幅的地址间距，**不是**从 DRAM 传输的字节数；该模型不计算 Cache Miss、访存带宽和预测加速比。缓存行是否命中仍需实际测量或进一步证据。
 
 本次 A 模块新增了 `test_baseline_plan.py`，覆盖计划复用、列表快照、错误状态不修改、实际配对位置和理论统计。
+
+## 7. A 模块再深化：受控的逻辑访问轨迹
+
+```python
+from baseline import baseline_logical_access_trace
+trace = baseline_logical_access_trace(n_qubits=4, targets=[0, 2], max_pairs=8)
+for event in trace["trace"]:
+    print(event["gate_index"], event["read_indices"], event["write_indices"])
+```
+
+- 按照 Baseline 双层循环的**逻辑执行顺序**生成振幅索引：每对先读两个振幅，再写回两个振幅。
+- `max_pairs` 是整个序列的最大采样对数，限制为 0–4096，避免为 `n=20+` 生成巨大的逐次访问记录。
+- 保留 `gate_index`、目标位置、门内 pair 编号、逻辑读写索引和**相对数组起点**的字节偏移。
+- 这是由代码循环结构**推导**的逻辑轨迹，不是仪器捕获的 CPU 指令地址顺序。JIT 优化、prefetch、Cache 和 DRAM 细节可能不同。
+
+## 8. A 模块再深化：缓存行配对地址几何（不是 Cache Miss）
+
+```python
+from baseline import baseline_cache_line_pair_profile
+report = baseline_cache_line_pair_profile(
+    n_qubits=20,
+    targets=[0, 5, 10],
+    line_bytes=64,           # 假设值；不代表当前 CPU 的真实 Cache Line
+    base_offset_bytes=0,     # 假设 state[0] 在缓存行边界
+)
+for gate in report["per_gate"]:
+    print(gate["target"], gate["same_line_pairs"],
+          gate["different_line_pairs"], gate["distinct_state_lines_touched"])
+```
+
+将状态向量看成连续的 16 B/振幅数组，指定一个**假设**缓存行大小（2 的整数次幂且至少 32 B）和 16 B 对齐的数组起始偏移。程序**精确计算地址几何意义上**每对振幅是否位于同一行，而不是运行模拟 CPU Cache。
+
+例如假定 64 B 行、起始 64 B 对齐，`n=20`：
+
+| Gate | 两振幅间字节距离 | 同一行的配对数 | 不同行的配对数 | 整体涉及的不同缓存行数 |
+|---|---:|---:|---:|---:|
+| H0 | 16 B | 524,288 | 0 | 262,144 |
+| H5 | 512 B | 0 | 524,288 | 262,144 |
+| H10 | 16,384 B | 0 | 524,288 | 262,144 |
+
+**关键解释**：
+- 不同门的位置可能改变**一对振幅是否属于同一个缓存行**；改变字节间距并不意味着“每门多读了缓存行”，因为一轮完整遍历仍会触及状态向量的全部振幅。
+- 同行配对与**缓存命中率**不是一回事：即便一对跨两行，也可能两行都已在 Cache 里。是否发生 Cache Miss 取决于访问时序、替换策略、预取、并发和实际机器。
+- 指定的 `line_bytes` 和 `base_offset_bytes` 是模型假设。若讨论具体机器，需与真实硬件参数核对；本函数不会测量 CPU Cache 或 DRAM，也不能预测加速比。
+- 计算同一行配对数使用循环结构的**周期性公式**，因此即使 `n=20+` 也不需要枚举全部振幅（时间复杂度主要取决于目标门数和假设行大小）。
+
+新增 `test_baseline_access_trace.py`，用小规模的**独立双层循环穷举**核对逻辑索引顺序和同行配对计数，覆盖 32/64/128 B 不同假设行大小、起始偏移、错误输入和大规模有界采样。
+
+**以上全部是 A 模块的分析辅助接口，不改变数值计算内核，也不修改 B/C/D/E 的模块。**
