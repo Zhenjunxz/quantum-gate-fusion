@@ -183,3 +183,35 @@ print(report["totals"])
 模型逐次跟踪逻辑访存事件，事件总量为 `2 * 2**n * gate_count`。默认最多 **1,000,000 事件**（可调但有上限），超过时提前抛异常，避免对 `n=20+` 的数百万事件做高开销 Python 循环。大规模时继续使用 `baseline_cache_line_pair_profile` 的 O(目标门数 × 行大小) 地址几何模型，**不要用该 LRU 模型生成正式性能数据**。
 
 新增独立的 `test_baseline_cache_model.py`，覆盖手工可核对的 1/2 缓存行情形、H0/H2 的对比、跨门热态、对齐、事件计数守恒、容量和规模边界。
+
+## 10. A 模块深化：组相联度敏感性（理想模型，不是实际 Cache）
+
+仅通过“同一缓存行/跨缓存行”或完全相联 LRU 来解释性能，可能忽略 **Cache Set 冲突（conflict behavior）**。因此 \`baseline_cache_model.py\` 的原函数新增可选参数 \`associativity_ways\`，兼容原调用：
+
+```python
+from baseline_cache_model import simulate_baseline_ideal_lru
+
+# 两种容量相同（128 B）、缓存行大小相同（64 B）的模型
+full = simulate_baseline_ideal_lru(
+    4, [3], 128, line_bytes=64, associativity_ways=2
+)
+direct = simulate_baseline_ideal_lru(
+    4, [3], 128, line_bytes=64, associativity_ways=1
+)
+print(full["totals"], direct["totals"])
+```
+
+定义：\`cache_capacity_bytes / line_bytes\` 是模型缓存行总数，\`associativity_ways\` 是每个 Set 的路数，Set 数量 = 总行数/路数，\`set_index = line_number % number_of_sets\`。每个 Set **单独按 LRU** 替换，写策略仍是假定 write-back、write-allocate，初始 Cache 为空。若省略 \`associativity_ways\`，保留上一版的**完全相联**行为。
+
+**可手算反例：** 4 qubits 状态向量 256 B，共四条 64 B 缓存行，H3 的配对访问会交替触及第 0/2 行、第 1/3 行。模型 Cache 容量固定 128 B（2 条行）：
+
+| 模型 | 组数 × 路数 | 逻辑读取缺失（模型） | 逻辑写入缺失（模型） |
+|---|---|---:|---:|
+| 直接映射 | 2 sets × 1 way | 16 | 16 |
+| 完全相联 | 1 set × 2 ways | 4 | 0 |
+
+这表明**同样容量、同样门序列、同样算法级逻辑读写量，也可能因组冲突而在假设模型中表现不同。** 但这里使用的是简单模运算索引的教学模型，并非真实 CPU 的缓存组织描述；实际机器可能有不同的索引/哈希方式、不同关联度、多级 Cache 和硬件预取。不能用此模型数字冒充硬件 Cache Miss，也不能据此断言现实中哪个门位置必然更快。
+
+**准确性保障：** 新增 \`test_baseline_associativity.py\`，用与 Baseline 双层循环不同的“逐个下标位测试”法列举成对振幅，并使用普通 Python 列表独立模拟每个 Set 的 LRU。测试覆盖多种 n、目标位、缓存行大小、容量、对齐、路数、跨门访问及非法配置。其作用是验证**模型计算与设定的语义一致**，不是验证模型预测真实硬件。
+
+此功能只增加 A 模块分析能力，不修改 Baseline 数值内核或其他人负责的 Fusion/Benchmark。
