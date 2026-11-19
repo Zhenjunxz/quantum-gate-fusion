@@ -9,6 +9,13 @@ It does NOT provide benchmark results or cache measurements.
 """
 from __future__ import annotations
 
+import argparse
+import json
+import platform
+import sys
+from pathlib import Path
+
+import numba
 import numpy as np
 
 from baseline import (
@@ -72,9 +79,22 @@ def verify_case(n_qubits: int, targets: tuple[int, ...]) -> dict:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="A-only Baseline correctness acceptance (no performance timing)"
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Optional path for a machine-readable JSON verification record",
+    )
+    args = parser.parse_args()
+
     print("A-only Baseline acceptance (NumPy tensor oracle; not timing)")
+    records = []
     for n, targets in CASES:
         result = verify_case(n, targets)
+        records.append(result)
         print(
             f"PASS n={n:>2} targets={targets!s:<18} "
             f"max_err={result['max_absolute_error']:.3e} "
@@ -82,6 +102,31 @@ def main() -> None:
             f"logical_bytes={result['logical_read_write_bytes']}"
         )
     print(f"All {len(CASES)} Baseline acceptance scenarios passed.")
+
+    if args.output is not None:
+        report = {
+            "schema_version": 1,
+            "task": "A Baseline H-only numerical correctness; not a benchmark",
+            "status": "passed",
+            "environment": {
+                "python": sys.version.split()[0],
+                "numpy": np.__version__,
+                "numba": numba.__version__,
+                "platform": platform.platform(),
+            },
+            "case_count": len(records),
+            "cases": records,
+            "warning": (
+                "These are numerical verification checks, not runtime, "
+                "hardware Cache Miss, or DRAM traffic measurements."
+            ),
+        }
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        print(f"Verification report saved to {args.output}")
 
 
 if __name__ == "__main__":
