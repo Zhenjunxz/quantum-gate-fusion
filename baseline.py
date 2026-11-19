@@ -118,3 +118,96 @@ def baseline_logical_memory_accesses(n_qubits: int, gate_count: int) -> dict[str
         "logical_write_bytes": count * bytes_per_amplitude,
         "total_logical_bytes": 2 * count * bytes_per_amplitude,
     }
+
+
+class BaselineSequencePlan:
+    """A validated, reusable H-only sequence for the unfused reference.
+
+    Build once and call run_inplace many times without recreating the target
+    array. It still validates each *state* before an in-place operation.
+    The plan is optional; existing Baseline entry points remain supported.
+    """
+
+    def __init__(self, n_qubits: int, targets: tuple[int, ...] | list[int]) -> None:
+        if type(n_qubits) is not int:
+            raise TypeError("n_qubits must be a Python int (not bool)")
+        if n_qubits < 2:
+            raise ValueError("n_qubits must be >= 2")
+        if not isinstance(targets, (list, tuple)):
+            raise TypeError("targets must be a list or tuple of Python integer indices")
+        checked = []
+        for target in targets:
+            if type(target) is not int:
+                raise TypeError("every target must be a Python int (not bool)")
+            if not 0 <= target < n_qubits:
+                raise ValueError(f"target {target} must satisfy 0 <= target < {n_qubits}")
+            checked.append(target)
+
+        # Snapshot the caller's list, so subsequent edits cannot change the plan.
+        self.n_qubits = n_qubits
+        self.targets = tuple(checked)
+        self._target_array = np.asarray(self.targets, dtype=np.int64)
+        self._target_array.setflags(write=False)
+
+    def run_inplace(self, state: np.ndarray) -> None:
+        """Perform separate H passes; never fuse adjacent or repeating gates."""
+        validate_state_vector(state)
+        if state.size != (1 << self.n_qubits):
+            raise ValueError(
+                f"state length must be 2**{self.n_qubits} for this prepared plan"
+            )
+        if self.targets:
+            _baseline_sequence_kernel(state, self._target_array)
+
+
+def prepare_baseline_sequence(
+    n_qubits: int, targets: tuple[int, ...] | list[int]
+) -> BaselineSequencePlan:
+    """Validate and prepare an H-only Baseline sequence for repeated execution."""
+    return BaselineSequencePlan(n_qubits, targets)
+
+
+def baseline_access_profile(
+    n_qubits: int, targets: tuple[int, ...] | list[int]
+) -> dict:
+    """Describe algorithm-level access patterns for each *unfused* H gate.
+
+    Sample index pairs reflect the exact baseline loop ordering. Pair strides
+    are array index differences, not observed cache/DRAM transfer counts.
+    """
+    plan = prepare_baseline_sequence(n_qubits, targets)
+    n_amplitudes = 1 << n_qubits
+    bytes_per_amplitude = np.dtype(np.complex128).itemsize
+    per_gate = []
+
+    for gate_index, target in enumerate(plan.targets):
+        stride = 1 << target
+        span = stride << 1
+        # The same formula as the baseline's nested loops, but only for
+        # the first few pairs so no large trace is materialized.
+        samples = []
+        for pair_number in range(min(4, n_amplitudes // 2)):
+            block, offset = divmod(pair_number, stride)
+            left = block * span + offset
+            samples.append((left, left + stride))
+
+        per_gate.append({
+            "gate_index": gate_index,
+            "target": target,
+            "pair_stride_amplitudes": stride,
+            "pair_stride_bytes": stride * bytes_per_amplitude,
+            "span_amplitudes": span,
+            "pairs_processed": n_amplitudes // 2,
+            "logical_read_bytes": n_amplitudes * bytes_per_amplitude,
+            "logical_write_bytes": n_amplitudes * bytes_per_amplitude,
+            "sample_index_pairs": samples,
+        })
+
+    return {
+        "n_qubits": n_qubits,
+        "n_amplitudes": n_amplitudes,
+        "state_bytes": n_amplitudes * bytes_per_amplitude,
+        "gate_targets": plan.targets,
+        "per_gate": per_gate,
+        "totals": baseline_logical_memory_accesses(n_qubits, len(plan.targets)),
+    }
